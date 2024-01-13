@@ -87,7 +87,7 @@ func TestSweepTimeLockManual(t *testing.T) {
 
 		_, _, _, _, _, err = tryKey(
 			baseKey, revPubKey, 0, defaultCsvLimit, lockScript,
-			tc.keyIndex, 500,
+			tc.keyIndex, 0, 500,
 		)
 		require.NoError(t, err)
 	}

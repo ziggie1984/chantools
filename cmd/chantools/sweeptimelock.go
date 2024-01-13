@@ -373,6 +373,12 @@ func bruteForceDelay(delayPubkey, revocationPubkey *btcec.PublicKey,
 			return 0, nil, nil, fmt.Errorf("error hashing script: "+
 				"%w", err)
 		}
+
+		_, targetAddr, _, _ := txscript.ExtractPkScriptAddrs(targetScript, chainParams)
+		_, addr, _, _ := txscript.ExtractPkScriptAddrs(sh, chainParams)
+
+		log.Infof("Target address: %v, Computed Address :%v, at "+
+			"csv_delay=%v", targetAddr, addr, i)
 		if bytes.Equal(targetScript[0:8], sh[0:8]) {
 			return int32(i), s, sh, nil
 		}

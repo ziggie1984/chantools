@@ -322,6 +322,8 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 		commitPoint *btcec.PublicKey
 	)
 	for i := startNumChannels; i < maxNumChannels; i++ {
+		log.Infof("Trying RevocationRoot at %v", i)
+
 		csvTimeout, script, scriptHash, commitPoint, delayDesc, err = tryKey(
 			baseKey, remoteRevPoint, startCsvTimeout, maxCsvTimeout,
 			lockScript, uint32(i), startNumChanUpdates,
@@ -335,7 +337,8 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 			break
 		}
 
-		log.Infof("Tried %d of %d keys.", i+1, maxKeys)
+		log.Infof("Tried key %d of %d keys.", startNumChannels,
+			maxNumChannels)
 	}
 
 	// Did we find what we looked for or did we just exhaust all
@@ -598,12 +601,16 @@ func bruteForceDelayPoint(delayBase, revBase *btcec.PublicKey,
 	maxChanUpdates uint64) (int32, []byte, []byte, *btcec.PublicKey,
 	error) {
 
+	log.Infof("=========Different ShaRootCreation===========")
+
 	for i := startNumChanUpdates; i < maxChanUpdates; i++ {
 		revPreimage, err := revRoot.AtIndex(i)
 		if err != nil {
 			return 0, nil, nil, nil, err
 		}
 		commitPoint := input.ComputeCommitmentPoint(revPreimage[:])
+
+		log.Infof("CommitPoint at ChanUpdate#%v", i)
 
 		csvTimeout, script, scriptHash, err := bruteForceDelay(
 			input.TweakPubKey(delayBase, commitPoint),
