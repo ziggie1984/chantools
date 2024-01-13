@@ -28,13 +28,16 @@ type sweepTimeLockManualCommand struct {
 	APIURL                    string
 	Publish                   bool
 	SweepAddr                 string
+	StartCsvValue             uint16
 	MaxCsvLimit               uint16
 	FeeRate                   uint32
 	TimeLockAddr              string
 	RemoteRevocationBasePoint string
 
-	MaxNumChannelsTotal uint16
-	MaxNumChanUpdates   uint64
+	StartNumChannelsTotal uint16
+	MaxNumChannelsTotal   uint16
+	MaxNumChanUpdates     uint64
+	StartNumChanUpdates   uint64
 
 	ChannelBackup string
 	ChannelPoint  string
@@ -98,6 +101,15 @@ chantools sweeptimelockmanual \
 			"limit to use",
 	)
 	cc.cmd.Flags().Uint16Var(
+		&cc.StartCsvValue, "startcsvlimit", defaultStartCsvValue,
+		"start CSV value to use",
+	)
+	cc.cmd.Flags().Uint16Var(
+		&cc.StartNumChannelsTotal, "startnumchanstotal", 0,
+		"start number of keys to try, set to the exact number if "+
+			"you the exact channel number",
+	)
+	cc.cmd.Flags().Uint16Var(
 		&cc.MaxNumChannelsTotal, "maxnumchanstotal", maxKeys, "maximum "+
 			"number of keys to try, set to maximum number of "+
 			"channels the local node potentially has or had",
@@ -106,6 +118,11 @@ chantools sweeptimelockmanual \
 		&cc.MaxNumChanUpdates, "maxnumchanupdates", maxPoints,
 		"maximum number of channel updates to try, set to maximum "+
 			"number of times the channel was used",
+	)
+	cc.cmd.Flags().Uint64Var(
+		&cc.StartNumChanUpdates, "startnumchanupdates", 0,
+		"start number of channel updates to try, useful when you "+
+			"know how many chan updates this channel has",
 	)
 	cc.cmd.Flags().Uint32Var(
 		&cc.FeeRate, "feerate", defaultFeeSatPerVByte, "fee rate to "+
@@ -161,9 +178,9 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 	}
 
 	var (
-		startCsvLimit             uint16
+		startCsvLimit             = c.StartCsvValue
 		maxCsvLimit               = c.MaxCsvLimit
-		startNumChannelsTotal     uint16
+		startNumChannelsTotal     = c.StartNumChannelsTotal
 		maxNumChannelsTotal       = c.MaxNumChannelsTotal
 		remoteRevocationBasePoint = c.RemoteRevocationBasePoint
 	)
@@ -194,7 +211,10 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 		remoteCfg := backupChan.RemoteChanCfg
 		remoteRevocationBasePoint = remoteCfg.RevocationBasePoint.PubKey
 
-		startCsvLimit = remoteCfg.CsvDelay
+		// We are recovering the local force close `toSelf` output
+		// therefore the csv delay is defined in our local cfg.
+		localCfg := backupChan.LocalChanCfg
+		startCsvLimit = localCfg.CsvDelay
 		maxCsvLimit = startCsvLimit + 1
 
 		delayPath, err := lnd.ParsePath(
@@ -231,14 +251,16 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 		extendedKey, c.APIURL, c.SweepAddr, c.TimeLockAddr,
 		remoteRevPoint, startCsvLimit, maxCsvLimit,
 		startNumChannelsTotal, maxNumChannelsTotal,
-		c.MaxNumChanUpdates, c.Publish, c.FeeRate,
+		c.StartNumChanUpdates, c.MaxNumChanUpdates, c.Publish,
+		c.FeeRate,
 	)
 }
 
 func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 	sweepAddr, timeLockAddr string, remoteRevPoint *btcec.PublicKey,
 	startCsvTimeout, maxCsvTimeout, startNumChannels, maxNumChannels uint16,
-	maxNumChanUpdates uint64, publish bool, feeRate uint32) error {
+	startNumChanUpdates, maxNumChanUpdates uint64, publish bool,
+	feeRate uint32) error {
 
 	log.Debugf("Starting to brute force the time lock script, using: "+
 		"remote_rev_base_point=%x, start_csv_limit=%d, "+
@@ -262,7 +284,7 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 	// brute force the script with the information we have. If not, we can't
 	// continue anyway.
 	lockScript, err := lnd.PrepareWalletAddress(
-		sweepAddr, chainParams, nil, extendedKey, "time lock",
+		timeLockAddr, chainParams, nil, extendedKey, "time lock",
 	)
 	if err != nil {
 		return err
@@ -302,7 +324,8 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 	for i := startNumChannels; i < maxNumChannels; i++ {
 		csvTimeout, script, scriptHash, commitPoint, delayDesc, err = tryKey(
 			baseKey, remoteRevPoint, startCsvTimeout, maxCsvTimeout,
-			lockScript, uint32(i), maxNumChanUpdates,
+			lockScript, uint32(i), startNumChanUpdates,
+			maxNumChanUpdates,
 		)
 
 		if err == nil {
@@ -413,8 +436,8 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 
 func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	startCsvTimeout, maxCsvTimeout uint16, lockScript []byte, idx uint32,
-	maxNumChanUpdates uint64) (int32, []byte, []byte, *btcec.PublicKey,
-	*keychain.KeyDescriptor, error) {
+	startNumChanUpdates, maxNumChanUpdates uint64) (int32, []byte, []byte,
+	*btcec.PublicKey, *keychain.KeyDescriptor, error) {
 
 	// The easy part first, let's derive the delay base point.
 	delayPath := []uint32{
@@ -445,8 +468,8 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	// points and CSV values.
 	csvTimeout, script, scriptHash, commitPoint, err := bruteForceDelayPoint(
 		delayPrivKey.PubKey(), remoteRevPoint, revRoot, lockScript,
-		startCsvTimeout, maxCsvTimeout, maxNumChanUpdates,
-	)
+		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
+		maxNumChanUpdates)
 	if err == nil {
 		return csvTimeout, script, scriptHash, commitPoint,
 			&keychain.KeyDescriptor{
@@ -510,7 +533,8 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 
 	csvTimeout, script, scriptHash, commitPoint, err = bruteForceDelayPoint(
 		delayPrivKey.PubKey(), remoteRevPoint, revRoot2, lockScript,
-		startCsvTimeout, maxCsvTimeout, maxNumChanUpdates,
+		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
+		maxNumChanUpdates,
 	)
 	if err == nil {
 		return csvTimeout, script, scriptHash, commitPoint,
@@ -551,7 +575,8 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 
 	csvTimeout, script, scriptHash, commitPoint, err = bruteForceDelayPoint(
 		delayPrivKey.PubKey(), remoteRevPoint, revRoot3, lockScript,
-		startCsvTimeout, maxCsvTimeout, maxNumChanUpdates,
+		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
+		maxNumChanUpdates,
 	)
 	if err == nil {
 		return csvTimeout, script, scriptHash, commitPoint,
@@ -569,10 +594,11 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 
 func bruteForceDelayPoint(delayBase, revBase *btcec.PublicKey,
 	revRoot *shachain.RevocationProducer, lockScript []byte,
-	startCsvTimeout, maxCsvTimeout uint16, maxChanUpdates uint64) (int32,
-	[]byte, []byte, *btcec.PublicKey, error) {
+	startCsvTimeout, maxCsvTimeout uint16, startNumChanUpdates,
+	maxChanUpdates uint64) (int32, []byte, []byte, *btcec.PublicKey,
+	error) {
 
-	for i := uint64(0); i < maxChanUpdates; i++ {
+	for i := startNumChanUpdates; i < maxChanUpdates; i++ {
 		revPreimage, err := revRoot.AtIndex(i)
 		if err != nil {
 			return 0, nil, nil, nil, err

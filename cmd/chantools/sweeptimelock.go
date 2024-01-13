@@ -21,6 +21,7 @@ import (
 const (
 	defaultFeeSatPerVByte = 30
 	defaultCsvLimit       = 2016
+	defaultStartCsvValue  = 0
 )
 
 type sweepTimeLockCommand struct {
