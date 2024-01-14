@@ -19,9 +19,10 @@ type ExplorerAPI struct {
 }
 
 type TX struct {
-	TXID string  `json:"txid"`
-	Vin  []*Vin  `json:"vin"`
-	Vout []*Vout `json:"vout"`
+	TXID     string  `json:"txid"`
+	Vin      []*Vin  `json:"vin"`
+	Vout     []*Vout `json:"vout"`
+	Locktime uint32  `json:"locktime"`
 }
 
 type Vin struct {
