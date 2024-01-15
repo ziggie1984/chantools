@@ -184,6 +184,7 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 		startNumChannelsTotal     = c.StartNumChannelsTotal
 		maxNumChannelsTotal       = c.MaxNumChannelsTotal
 		remoteRevocationBasePoint = c.RemoteRevocationBasePoint
+		multiSigIdx               uint32
 	)
 
 	// We either support specifying the remote revocation base point
@@ -231,6 +232,17 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 		startNumChannelsTotal = uint16(delayPath[4])
 		maxNumChannelsTotal = startNumChannelsTotal + 1
 
+		multiSigKeyPath, err := lnd.ParsePath(
+			backupChan.LocalChanCfg.MultiSigKey.Path,
+		)
+		if err != nil {
+			return fmt.Errorf("error parsing multisigkey path: %w", err)
+		}
+		if len(multiSigKeyPath) != 5 {
+			return fmt.Errorf("invalid delay path '%v'", delayPath)
+		}
+		multiSigIdx = multiSigKeyPath[4]
+
 	case c.ChannelBackup != "" && c.RemoteRevocationBasePoint != "":
 		return fmt.Errorf("cannot use both --frombackup and " +
 			"--remoterevbasepoint at the same time")
@@ -250,7 +262,7 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 
 	return sweepTimeLockManual(
 		extendedKey, c.APIURL, c.SweepAddr, c.TimeLockAddr,
-		remoteRevPoint, startCsvLimit, maxCsvLimit,
+		remoteRevPoint, multiSigIdx, startCsvLimit, maxCsvLimit,
 		startNumChannelsTotal, maxNumChannelsTotal,
 		c.StartNumChanUpdates, c.MaxNumChanUpdates, c.Publish,
 		c.FeeRate,
@@ -258,7 +270,7 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 }
 
 func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
-	sweepAddr, timeLockAddr string, remoteRevPoint *btcec.PublicKey,
+	sweepAddr, timeLockAddr string, remoteRevPoint *btcec.PublicKey, multiSigIdx uint32,
 	startCsvTimeout, maxCsvTimeout, startNumChannels, maxNumChannels uint16,
 	startNumChanUpdates, maxNumChanUpdates uint64, publish bool,
 	feeRate uint32) error {
@@ -326,7 +338,7 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 		log.Infof("Trying RevocationRoot at %v", i)
 
 		csvTimeout, script, scriptHash, commitPoint, delayDesc, err = tryKey(
-			baseKey, remoteRevPoint, startCsvTimeout, maxCsvTimeout,
+			baseKey, remoteRevPoint, multiSigIdx, startCsvTimeout, maxCsvTimeout,
 			lockScript, uint32(i), startNumChanUpdates,
 			maxNumChanUpdates,
 		)
@@ -439,8 +451,9 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 }
 
 func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
-	startCsvTimeout, maxCsvTimeout uint16, lockScript []byte, idx uint32,
-	startNumChanUpdates, maxNumChanUpdates uint64) (int32, []byte, []byte,
+	multiSigIdx uint32, startCsvTimeout, maxCsvTimeout uint16,
+	lockScript []byte, idx uint32, startNumChanUpdates,
+	maxNumChanUpdates uint64) (int32, []byte, []byte,
 	*btcec.PublicKey, *keychain.KeyDescriptor, error) {
 
 	// The easy part first, let's derive the delay base point.
@@ -528,10 +541,13 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 		)), 0, idx,
 	}
 
+	if multiSigIdx == 0 {
+		multiSigIdx = idx
+	}
 	// Now we try the same with the new revocation producer format.
 	multiSigPath := []uint32{
 		lnd.HardenedKey(uint32(keychain.KeyFamilyMultiSig)),
-		0, idx,
+		0, multiSigIdx,
 	}
 	multiSigPrivKey, err := lnd.PrivKeyFromPath(baseKey, multiSigPath)
 	if err != nil {
@@ -570,10 +586,14 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 		)), 0, idx + 1,
 	}
 
+	if multiSigIdx == 0 {
+		multiSigIdx = idx
+	}
+
 	// Now we try the same with the new revocation producer format.
 	multiSigPath = []uint32{
 		lnd.HardenedKey(uint32(keychain.KeyFamilyMultiSig)),
-		0, idx,
+		0, multiSigIdx,
 	}
 	multiSigPrivKey, err = lnd.PrivKeyFromPath(baseKey, multiSigPath)
 	if err != nil {
@@ -586,6 +606,11 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	if err != nil {
 		return 0, nil, nil, nil, nil, err
 	}
+
+	log.Infof("MultiSigBase: %x",
+		multiSigPrivKey.PubKey().SerializeCompressed())
+
+	log.Infof("ShaRootPath: %v", revPath3)
 
 	csvTimeout, script, scriptHash, commitPoint, err = bruteForceDelayPoint(
 		delayPrivKey.PubKey(), remoteRevPoint, htlcPrivKey.PubKey(), revRoot3, lockScript,
@@ -621,13 +646,19 @@ func bruteForceDelayPoint(delayBase, revBase, htlcBase *btcec.PublicKey,
 		}
 		commitPoint := input.ComputeCommitmentPoint(revPreimage[:])
 
-		log.Infof("RevocationPK(RIPEMD160): %v",
+		log.Infof("RevocationPK(RIPEMD160): %x",
 			btcutil.Hash160(input.DeriveRevocationPubkey(revBase, commitPoint).SerializeCompressed()))
 
-		log.Infof("LocalHTLCPK: %v",
-			btcutil.Hash160(input.TweakPubKey(htlcBase, commitPoint).SerializeCompressed()))
+		log.Infof("LocalHTLCPK: %x",
+			input.TweakPubKey(htlcBase, commitPoint).SerializeCompressed())
 
-		log.Infof("CommitPoint at ChanUpdate#%v", i)
+		log.Infof("DelayedBase: %x",
+			delayBase.SerializeCompressed())
+
+		log.Infof("HTLCBase: %x",
+			htlcBase.SerializeCompressed())
+
+		log.Infof("CommitPoint at ChanUpdate#%v, CPoint=%x", i, commitPoint.SerializeCompressed())
 
 		csvTimeout, script, scriptHash, err := bruteForceDelay(
 			input.TweakPubKey(delayBase, commitPoint),
