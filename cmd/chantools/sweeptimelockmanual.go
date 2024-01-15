@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -452,6 +453,16 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 		return 0, nil, nil, nil, nil, err
 	}
 
+	// The easy part first, let's derive the delay base point.
+	htlcPath := []uint32{
+		lnd.HardenedKey(uint32(keychain.KeyFamilyHtlcBase)),
+		0, idx,
+	}
+	htlcPrivKey, err := lnd.PrivKeyFromPath(baseKey, htlcPath)
+	if err != nil {
+		return 0, nil, nil, nil, nil, err
+	}
+
 	// Get the revocation base point first, so we can calculate our
 	// commit point. We start with the old way where the revocation index
 	// was the same as the other indices. This applies to all channels
@@ -470,7 +481,7 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	// will take a long while as we both have to go through commit
 	// points and CSV values.
 	csvTimeout, script, scriptHash, commitPoint, err := bruteForceDelayPoint(
-		delayPrivKey.PubKey(), remoteRevPoint, revRoot, lockScript,
+		delayPrivKey.PubKey(), remoteRevPoint, htlcPrivKey.PubKey(), revRoot, lockScript,
 		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
 		maxNumChanUpdates)
 	if err == nil {
@@ -535,7 +546,7 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	}
 
 	csvTimeout, script, scriptHash, commitPoint, err = bruteForceDelayPoint(
-		delayPrivKey.PubKey(), remoteRevPoint, revRoot2, lockScript,
+		delayPrivKey.PubKey(), remoteRevPoint, htlcPrivKey.PubKey(), revRoot2, lockScript,
 		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
 		maxNumChanUpdates,
 	)
@@ -577,7 +588,7 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	}
 
 	csvTimeout, script, scriptHash, commitPoint, err = bruteForceDelayPoint(
-		delayPrivKey.PubKey(), remoteRevPoint, revRoot3, lockScript,
+		delayPrivKey.PubKey(), remoteRevPoint, htlcPrivKey.PubKey(), revRoot3, lockScript,
 		startCsvTimeout, maxCsvTimeout, startNumChanUpdates,
 		maxNumChanUpdates,
 	)
@@ -595,7 +606,7 @@ func tryKey(baseKey *hdkeychain.ExtendedKey, remoteRevPoint *btcec.PublicKey,
 	return 0, nil, nil, nil, nil, fmt.Errorf("target script not derived")
 }
 
-func bruteForceDelayPoint(delayBase, revBase *btcec.PublicKey,
+func bruteForceDelayPoint(delayBase, revBase, htlcBase *btcec.PublicKey,
 	revRoot *shachain.RevocationProducer, lockScript []byte,
 	startCsvTimeout, maxCsvTimeout uint16, startNumChanUpdates,
 	maxChanUpdates uint64) (int32, []byte, []byte, *btcec.PublicKey,
@@ -609,6 +620,12 @@ func bruteForceDelayPoint(delayBase, revBase *btcec.PublicKey,
 			return 0, nil, nil, nil, err
 		}
 		commitPoint := input.ComputeCommitmentPoint(revPreimage[:])
+
+		log.Infof("RevocationPK(RIPEMD160): %v",
+			btcutil.Hash160(input.DeriveRevocationPubkey(revBase, commitPoint).SerializeCompressed()))
+
+		log.Infof("LocalHTLCPK: %v",
+			btcutil.Hash160(input.TweakPubKey(htlcBase, commitPoint).SerializeCompressed()))
 
 		log.Infof("CommitPoint at ChanUpdate#%v", i)
 
