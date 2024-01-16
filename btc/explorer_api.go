@@ -68,6 +68,11 @@ type AddressStats struct {
 	MempoolStats *Stats `json:"mempool_stats"`
 }
 
+type Transactions struct {
+	Tx      *TX
+	TxIndex int
+}
+
 func (a *ExplorerAPI) Transaction(txid string) (*TX, error) {
 	tx := &TX{}
 	err := fetchJSON(fmt.Sprintf("%s/tx/%s", a.BaseURL, txid), tx)
@@ -88,23 +93,32 @@ func (a *ExplorerAPI) Transaction(txid string) (*TX, error) {
 	return tx, nil
 }
 
-func (a *ExplorerAPI) Outpoint(addr string) (*TX, int, error) {
+func (a *ExplorerAPI) Outpoints(addr string) ([]Transactions, error) {
 	var txs []*TX
+	var transactions []Transactions
 	err := fetchJSON(
 		fmt.Sprintf("%s/address/%s/txs", a.BaseURL, addr), &txs,
 	)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	for _, tx := range txs {
 		for idx, vout := range tx.Vout {
 			if vout.ScriptPubkeyAddr == addr {
-				return tx, idx, nil
+				transactions = append(
+					transactions, Transactions{
+						Tx:      tx,
+						TxIndex: idx,
+					})
 			}
 		}
 	}
 
-	return nil, 0, fmt.Errorf("no tx found")
+	if len(transactions) != 0 {
+		return transactions, nil
+	}
+
+	return nil, fmt.Errorf("no tx found")
 }
 
 func (a *ExplorerAPI) Spends(addr string) ([]*TX, error) {

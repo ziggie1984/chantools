@@ -40,6 +40,8 @@ type sweepTimeLockManualCommand struct {
 	MaxNumChanUpdates     uint64
 	StartNumChanUpdates   uint64
 
+	Batch bool
+
 	ChannelBackup string
 	ChannelPoint  string
 
@@ -148,6 +150,9 @@ chantools sweeptimelockmanual \
 			"specified in the --frombackup flag, "+
 			"format: txid:index",
 	)
+	cc.cmd.Flags().BoolVar(
+		&cc.Batch, "Batch", false, "batch sweeps",
+	)
 
 	cc.rootKey = newRootKey(cc.cmd, "deriving keys")
 	cc.inputs = newInputFlags(cc.cmd)
@@ -239,7 +244,7 @@ func (c *sweepTimeLockManualCommand) Execute(_ *cobra.Command, _ []string) error
 			return fmt.Errorf("error parsing multisigkey path: %w", err)
 		}
 		if len(multiSigKeyPath) != 5 {
-			return fmt.Errorf("invalid delay path '%v'", delayPath)
+			return fmt.Errorf("invalid delay path '%v'", multiSigKeyPath)
 		}
 		multiSigIdx = multiSigKeyPath[4]
 
@@ -363,90 +368,97 @@ func sweepTimeLockManual(extendedKey *hdkeychain.ExtendedKey, apiURL string,
 	// We now know everything we need to construct the sweep transaction,
 	// except for what outpoint to sweep. We'll ask the chain API to give
 	// us this information.
-	tx, txindex, err := api.Outpoint(timeLockAddr)
+	txs, err := api.Outpoints(timeLockAddr)
 	if err != nil {
 		return fmt.Errorf("error looking up lock address %s on chain: "+
 			"%v", timeLockAddr, err)
 	}
 
-	sweepTx := wire.NewMsgTx(2)
-	sweepValue := int64(tx.Vout[txindex].Value)
+	for _, transaction := range txs {
+		tx := transaction.Tx
+		txindex := transaction.TxIndex
+		sweepTx := wire.NewMsgTx(2)
+		sweepValue := int64(tx.Vout[txindex].Value)
 
-	// Create the transaction input.
-	txHash, err := chainhash.NewHashFromStr(tx.TXID)
-	if err != nil {
-		return fmt.Errorf("error parsing tx hash: %w", err)
-	}
-	sweepTx.TxIn = []*wire.TxIn{{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  *txHash,
-			Index: uint32(txindex),
-		},
-		Sequence: input.LockTimeToSequence(
-			false, uint32(csvTimeout),
-		),
-	}}
+		// Create the transaction input.
+		txHash, err := chainhash.NewHashFromStr(tx.TXID)
+		if err != nil {
+			return fmt.Errorf("error parsing tx hash: %w", err)
+		}
+		sweepTx.TxIn = []*wire.TxIn{{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  *txHash,
+				Index: uint32(txindex),
+			},
+			Sequence: input.LockTimeToSequence(
+				false, uint32(csvTimeout),
+			),
+		}}
 
-	// Calculate the fee based on the given fee rate and our weight
-	// estimation.
-	estimator.AddWitnessInput(input.ToLocalTimeoutWitnessSize)
-	feeRateKWeight := chainfee.SatPerKVByte(1000 * feeRate).FeePerKWeight()
-	totalFee := feeRateKWeight.FeeForWeight(int64(estimator.Weight()))
+		// Calculate the fee based on the given fee rate and our weight
+		// estimation.
+		singleEstimator := estimator
+		singleEstimator.AddWitnessInput(input.ToLocalTimeoutWitnessSize)
+		feeRateKWeight := chainfee.SatPerKVByte(1000 * feeRate).FeePerKWeight()
+		totalFee := feeRateKWeight.FeeForWeight(int64(singleEstimator.Weight()))
 
-	// Add our sweep destination output.
-	sweepTx.TxOut = []*wire.TxOut{{
-		Value:    sweepValue - int64(totalFee),
-		PkScript: sweepScript,
-	}}
+		// Add our sweep destination output.
+		sweepTx.TxOut = []*wire.TxOut{{
+			Value:    sweepValue - int64(totalFee),
+			PkScript: sweepScript,
+		}}
 
-	log.Infof("Fee %d sats of %d total amount (estimated weight %d)",
-		totalFee, sweepValue, estimator.Weight())
+		log.Infof("Fee %d sats of %d total amount (estimated weight %d)",
+			totalFee, sweepValue, singleEstimator.Weight())
 
-	// Create the sign descriptor for the input then sign the transaction.
-	prevOutFetcher := txscript.NewCannedPrevOutputFetcher(
-		scriptHash, sweepValue,
-	)
-	sigHashes := txscript.NewTxSigHashes(sweepTx, prevOutFetcher)
-	signDesc := &input.SignDescriptor{
-		KeyDesc: *delayDesc,
-		SingleTweak: input.SingleTweakBytes(
-			commitPoint, delayDesc.PubKey,
-		),
-		WitnessScript: script,
-		Output: &wire.TxOut{
-			PkScript: scriptHash,
-			Value:    sweepValue,
-		},
-		InputIndex:        0,
-		SigHashes:         sigHashes,
-		PrevOutputFetcher: prevOutFetcher,
-		HashType:          txscript.SigHashAll,
-	}
-	witness, err := input.CommitSpendTimeout(signer, signDesc, sweepTx)
-	if err != nil {
-		return err
-	}
-	sweepTx.TxIn[0].Witness = witness
-
-	var buf bytes.Buffer
-	err = sweepTx.Serialize(&buf)
-	if err != nil {
-		return err
-	}
-
-	// Publish TX.
-	if publish {
-		response, err := api.PublishTx(
-			hex.EncodeToString(buf.Bytes()),
+		// Create the sign descriptor for the input then sign the transaction.
+		prevOutFetcher := txscript.NewCannedPrevOutputFetcher(
+			scriptHash, sweepValue,
 		)
+		sigHashes := txscript.NewTxSigHashes(sweepTx, prevOutFetcher)
+		signDesc := &input.SignDescriptor{
+			KeyDesc: *delayDesc,
+			SingleTweak: input.SingleTweakBytes(
+				commitPoint, delayDesc.PubKey,
+			),
+			WitnessScript: script,
+			Output: &wire.TxOut{
+				PkScript: scriptHash,
+				Value:    sweepValue,
+			},
+			InputIndex:        0,
+			SigHashes:         sigHashes,
+			PrevOutputFetcher: prevOutFetcher,
+			HashType:          txscript.SigHashAll,
+		}
+		witness, err := input.CommitSpendTimeout(signer, signDesc, sweepTx)
 		if err != nil {
 			return err
 		}
-		log.Infof("Published TX %s, response: %s",
-			sweepTx.TxHash().String(), response)
+		sweepTx.TxIn[0].Witness = witness
+
+		var buf bytes.Buffer
+		err = sweepTx.Serialize(&buf)
+		if err != nil {
+			return err
+		}
+
+		// Publish TX.
+		if publish {
+			response, err := api.PublishTx(
+				hex.EncodeToString(buf.Bytes()),
+			)
+			if err != nil {
+				return err
+			}
+			log.Infof("Published TX %s, response: %s",
+				sweepTx.TxHash().String(), response)
+		}
+
+		log.Infof("Transaction: %x", buf.Bytes())
+
 	}
 
-	log.Infof("Transaction: %x", buf.Bytes())
 	return nil
 }
 

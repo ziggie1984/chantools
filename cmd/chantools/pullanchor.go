@@ -320,11 +320,14 @@ func addAnchorInputs(anchorAddrs []string, packet *psbt.Packet,
 	// Fetch the additional info we need for the anchor output as well.
 	results := make([]targetAnchor, len(anchorAddrs))
 	for idx, anchorAddr := range anchorAddrs {
-		anchorTx, anchorIndex, err := api.Outpoint(anchorAddr)
+		txs, err := api.Outpoints(anchorAddr)
 		if err != nil {
 			return nil, fmt.Errorf("error fetching anchor "+
 				"outpoint: %w", err)
 		}
+
+		anchorTx := txs[0].Tx
+		anchorIndex := txs[0].TxIndex
 		anchorTxHash, err := chainhash.NewHashFromStr(anchorTx.TXID)
 		if err != nil {
 			return nil, fmt.Errorf("error decoding anchor txid: %w",
