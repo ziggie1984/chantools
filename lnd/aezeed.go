@@ -238,6 +238,9 @@ func OpenWallet(walletDbPath string,
 			"database: %w", err)
 	}
 
+	publicWalletPw = append(publicWalletPw, 0x0A)
+	privateWalletPw = append(privateWalletPw, 0x0A)
+
 	w, err := wallet.Open(db, publicWalletPw, openCallbacks, chainParams, 0)
 	if err != nil {
 		_ = db.Close()
