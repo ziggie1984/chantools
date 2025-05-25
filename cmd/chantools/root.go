@@ -142,6 +142,7 @@ func main() {
 		newVanityGenCommand(),
 		newWalletInfoCommand(),
 		newZombieRecoveryCommand(),
+		newDeleteTombstoneCommand(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
